@@ -119,24 +119,34 @@ class MVN(object):
         t = torch.linspace(0, 2*pi, 100)
         with torch.no_grad():
             mu, scale_tril = self.loc(), self.scale_tril()
-            xy = mu.view(2, 1) + scale_tril @ torch.stack([torch.cos(t), torch.sin(t)], dim=0)
+            xy = mu.view(2, 1) + nsigma * scale_tril @ torch.stack([torch.cos(t), torch.sin(t)], dim=0)
         return xy[0], xy[1]
 
 
 class MVNFull(MVN):
-    """A custom Multivariate Normal (MVN) class with (loc, scale_tril) parameterization. Total number of parameters
-    is d for the location plus d(d+1)/2 for the lower-triangular Cholesky factorization of the covariance.
+    """A custom Multivariate Normal (MVN) class with (loc, scale_tril) parameterization. Total
+    number of parameters is d for the location plus d(d+1)/2 for the lower-triangular Cholesky
+    factorization of the covariance.
 
-    We allow scale_tril to have negative standard deviations, since L@L' will be positive definite regardless
+    We allow scale_tril to have negative standard deviations, since L@L' will be positive definite
+    regardless
     """
 
-    def __init__(self, loc=None, scale_tril=None, d=None):
-        super().__init__(loc, d)
+    def __init__(self, loc=None, scale_tril=None, d=None, theta=None):
+        if theta is not None:
+            # If x has dimension d, theta has dimension d+d(d+1)/2. The following expression inverts
+            # this to get d from a given theta.
+            super().__init__(d=int(sqrt(9+8*len(theta))-3)//2)
+        else:
+            super().__init__(loc, d)
         loc = loc if loc is not None else torch.zeros(self.d)
         scale_tril = scale_tril if scale_tril is not None else torch.eye(self.d)
         self._chol_ij = torch.tril_indices(self.d, self.d)
         self.theta = torch.cat([loc, scale_tril[self._chol_ij[0], self._chol_ij[1]]])
         self.n_params = self.d + self.d*(self.d+1)//2
+        # If theta is given, it overrides all of the above default values
+        if theta is not None:
+            self.theta[...] = theta
         if len(self.theta) != self.n_params:
             raise ValueError(f"Dimension problem! Expected |theta| to be {self.n_params} but was {len(self.theta)}")
 
@@ -193,16 +203,22 @@ class MVNFull(MVN):
 
 
 class MVNDiag(MVN):
-    """A custom Multivariate Normal (MVN) class with theta=(loc, sqrt(diag(cov))) parameterization. Total number of
-    parameters is 2d: d for the location and d standard deviations.
+    """A custom Multivariate Normal (MVN) class with theta=(loc, sqrt(diag(cov))) parameterization.
+    Total number of parameters is 2d: d for the location and d standard deviations.
     """
 
-    def __init__(self, loc=None, scale=None, d=None):
-        super().__init__(loc, d)
+    def __init__(self, loc=None, scale=None, d=None, theta=None):
+        if theta is not None:
+            super().__init__(d=len(theta)//2)
+        else:
+            super().__init__(loc, d)
         loc = loc if loc is not None else torch.zeros(self.d)
         scale = scale if scale is not None else torch.ones(self.d)
         self.theta = torch.cat([loc, torch.log(torch.abs(scale))])
         self.n_params = 2 * self.d
+        # If theta is given, it overrides all of the above default values
+        if theta is not None:
+            self.theta[...] = theta
         if len(self.theta) != self.n_params:
             raise ValueError(f"Dimension problem! Expected |theta| to be {self.n_params} but was {len(self.theta)}")
 
@@ -244,16 +260,22 @@ class MVNDiag(MVN):
 
 
 class MVNIso(MVN):
-    """A custom Multivariate Normal (MVN) class with theta=(loc, log(sigma)) parameterization. Total number of
-    parameters is d+1
+    """A custom Multivariate Normal (MVN) class with theta=(loc, log(sigma)) parameterization. Total
+    number of parameters is d+1
     """
 
-    def __init__(self, loc=None, scale=None, d=None):
-        super().__init__(loc, d)
+    def __init__(self, loc=None, scale=None, d=None, theta=None):
+        if theta is not None:
+            super().__init__(d=len(theta)-1)
+        else:
+            super().__init__(loc, d)
         loc = loc if loc is not None else torch.zeros(self.d)
         scale = scale if scale is not None else torch.ones(1)
         self.theta = torch.cat([loc, torch.log(torch.abs(scale))])
         self.n_params = self.d + 1
+        # If theta is given, it overrides all of the above default values
+        if theta is not None:
+            self.theta[...] = theta
         if len(self.theta) != self.n_params:
             raise ValueError(f"Dimension problem! Expected |theta| to be {self.n_params} but was {len(self.theta)}")
 
@@ -295,7 +317,8 @@ class MVNIso(MVN):
 
 
 def create_mog(mvns):
-    """Given an iterable set of MVN instances, construct a torch.distributions MixtureSameFamily instance
+    """Given an iterable set of MVN instances, construct a torch.distributions MixtureSameFamily
+    instance
     """
     all_means, all_trils = zip(*[(mvn.loc().clone(), mvn.scale_tril().clone()) for mvn in mvns])
     weights = torch.distributions.Categorical(torch.ones(len(all_means)))
@@ -360,6 +383,16 @@ def _run_ev_test(cls):
     plt.axis('equal')
     plt.grid()
     plt.show()
+
+
+def _init_from_theta_test(cls, dim):
+    q1 = cls.new_random(d=dim)
+    q2 = cls(theta=q1.theta)
+    assert torch.allclose(q1.loc(), q2.loc())
+    assert torch.allclose(q1.scale_tril(), q2.scale_tril())
+    # Override q1.theta -- should not affect q2, which should have separate memory
+    q1.theta[0] = 0.
+    assert q2.theta[0] != 0.
 
 
 def _run_fisher_test(cls, dim):
@@ -437,5 +470,6 @@ if __name__ == "__main__":
             _run_logdet_fisher_test(cls, dim=d)
             _run_kl_test(cls, dim=d)
             _run_entropy_test(cls, dim=d)
+            _init_from_theta_test(cls, dim=d)
 
         # _run_ev_test(cls)
