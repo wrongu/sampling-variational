@@ -14,9 +14,19 @@ def stams_mvn_langevin(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_kl_
     samples = torch.zeros(n_samples + burn_in, q_init.n_params)
     samples[0, :] = q_init.theta
 
+
+    def _log_psi_helper(q):
+        q.theta.requires_grad_(True)
+        _kl = -q.entropy() - q.monte_carlo_ev(log_p, n_kl_samples)
+        _grad_kl = torch.autograd.grad(_kl, q.theta)[0]
+        q.theta.requires_grad_(False)
+        _log_psi = 0.5*q.log_det_fisher() - lam_kl*_kl.detach()
+        _grad_log_psi = 0.5*q.grad_log_det_fisher() - lam_kl*_grad_kl
+        return _log_psi, _grad_log_psi
+
+
     log_psi = torch.zeros(n_samples + burn_in)
-    kl = -q_init.entropy() - q_init.monte_carlo_ev(log_p, n_kl_samples)
-    log_psi[0] = 0.5*q_init.log_det_fisher() - lam_kl*kl
+    log_psi[0], grad_log_psi = _log_psi_helper(q_init)
 
     # Pre-sample accept/reject thresholds for Metropolis adjustments
     u = torch.rand(n_samples + burn_in).log()
@@ -24,28 +34,26 @@ def stams_mvn_langevin(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_kl_
 
     q = q_init.clone()
     for t in range(1, n_samples + burn_in):
-        # Use autograd + monte carlo to estimate gradient of kl(q||p) with respect to theta
-        q.theta.requires_grad_(True)
-        kl = -q.entropy() - q.monte_carlo_ev(log_p, n_kl_samples)
-        grad_kl = torch.autograd.grad(kl, q.theta)[0]
-        q.theta.requires_grad_(False)
-
-        # Compute grad log psi
-        grad_log_psi = 0.5*q.grad_log_det_fisher() - lam_kl * grad_kl
-
         # Proposed Langevin step
-        new_theta = q.theta + dt * (grad_log_psi + sqrt(2/dt)*torch.randn(q.n_params))
+        new_theta = q.theta + dt * grad_log_psi + sqrt(2*dt)*torch.randn(q.n_params)
+
+        # Provisionally assign new_theta to q and evaluate the new point
         tmp_theta, q.theta = q.theta, new_theta
-        new_kl = -q.entropy() - q.monte_carlo_ev(log_p, n_kl_samples)
-        new_log_psi = 0.5*q.log_det_fisher() - lam_kl*new_kl
+        new_log_psi, new_grad_log_psi = _log_psi_helper(q)
+
+        # Compute (log) Metropolis ratio, log[p(x')q(x|x')/p(x)q(x'|x)]
+        log_q_forward = -1 / (4*dt) * torch.sum((new_theta - (tmp_theta + dt*grad_log_psi))**2)
+        log_q_reverse = -1 / (4*dt) * torch.sum((tmp_theta - (new_theta + dt*new_grad_log_psi))**2)
+        log_metropolis_ratio =  new_log_psi - log_psi[t-1] + log_q_reverse - log_q_forward
 
         # Accept or reject
-        if new_log_psi - log_psi[t-1] > u[t]:
+        if log_metropolis_ratio > u[t]:
             accept[t] = 1.
             log_psi[t] = new_log_psi
+            grad_log_psi = new_grad_log_psi
         else:
             accept[t] = 0.
-            q.theta = tmp_theta
+            q.theta = tmp_theta  # Undo provisional update to q from above
             log_psi[t] = log_psi[t-1]
 
         # Store sample
