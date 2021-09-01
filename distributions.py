@@ -4,7 +4,7 @@ import torch
 def log_prob_banana(xy):
     x, y = xy[0], xy[1]
     # Easier to read version: -(y-(x/2)^2)^2 - (x/2)^2
-    return -x**4/8+y*x**2-2*y**2-x**2/4
+    return -x*x*x*x/8 + y*x*x - 2*y*y - x*x/4
 
 
 def log_prob_cigar(xy, c=.99):
@@ -12,7 +12,7 @@ def log_prob_cigar(xy, c=.99):
     # Compute precision terms for covariance matrix [[1,c],[c,1]], where precision will be [[a,b],[b,a]]
     a = 1./(1. - c*c)
     b = -c/(1. - c*c)
-    return -0.5*(a*x**2 + a*y**2 + 2*b*x*y)
+    return -0.5*(a*x*x + a*y*y + 2*b*x*y)
 
 
 
