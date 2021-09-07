@@ -123,7 +123,9 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
         new_log_psi = _log_psi_helper(th)
 
         # Compute (log) Metropolis ratio, log[p(x')q(x|x')/p(x)q(x'|x)]
-        log_metropolis_ratio = new_log_psi - log_psi[t-1] + torch.sum(momentum[t, :]*momentum[t, :])/mass/2 - torch.sum(p*p)/mass/2
+        new_hamiltonian = new_log_psi - torch.sum(p*p)/mass/2
+        old_hamiltonian = log_psi[t-1] - torch.sum(momentum[t, :]*momentum[t, :])/mass/2
+        log_metropolis_ratio = new_hamiltonian - old_hamiltonian
 
         # Accept or reject
         if log_metropolis_ratio > u[t]:

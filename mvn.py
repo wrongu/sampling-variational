@@ -102,9 +102,11 @@ class MVN(object):
         """Estimate the expected value (ev) of a given function using monte carlo samples from this normal.
 
         If include_mcse is set to True, there is a second return value: the estimated monte carlo standard error
+
+        fn() must handle vectorization by accepting input of size (d, n_samples)
         """
-        samples = self.loc() + torch.randn(n_samples, self.d, device=self.theta.device) @ self.scale_tril().T
-        values = torch.tensor([fn(x) for x in samples])
+        samples = self.loc()[:, None] + self.scale_tril() @ torch.randn(self.d, n_samples, device=self.theta.device)
+        values = fn(samples)
         if include_mcse:
             return values.mean(), values.std() / sqrt(n_samples)
         else:
