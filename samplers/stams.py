@@ -96,6 +96,18 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
         q.theta.requires_grad_(False)
         return 0.5*q.grad_log_det_fisher() - lam_kl*_grad_kl
 
+    def _hess_log_psi_helper(theta):
+        q.theta.copy_(theta)
+        q.theta.requires_grad_(True)
+        _kl = -q.entropy() - q.monte_carlo_ev(log_p, n_kl_samples)
+        _tmp_log_psi = 0.5*q.log_det_fisher() - lam_kl*_kl
+        _grad_log_psi = torch.autograd.grad(_tmp_log_psi, q.theta, create_graph=True)[0]
+        curv = torch.zeros(q.n_params, q.n_params)
+        for i in range(q.n_params):
+            curv[i, :] = torch.autograd.grad(_grad_log_psi[i], q.theta, retain_graph=True)[0]
+        q.theta.requires_grad_(False)
+        return curv
+
 
     log_psi = torch.zeros(n_samples + burn_in)
     log_psi[0] = _log_psi_helper(samples[0, :])
@@ -104,14 +116,17 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
     u = torch.rand(n_samples + burn_in).log()
     accept = torch.ones(n_samples + burn_in)
 
-    # Pre-sample momentum values
-    momentum = torch.randn(n_samples + burn_in, q_init.n_params) * sqrt(mass)
+    # Turn mass into a vector representing the diagonal of a mass matrix
+    mass = mass * q.theta.new_ones(q_init.n_params)
+
+    # Pre-sample momentum values (not yet adjusted by mass)
+    momentum_z = torch.randn(n_samples + burn_in, q_init.n_params)
 
     for t in range(1, n_samples + burn_in):
         # Run leapfrog dynamics
-        p, th, g = momentum[t, :], samples[t-1, :], _grad_log_psi_helper(samples[t-1, :])
+        p0, th, g = momentum_z[t, :] * torch.sqrt(mass), samples[t-1, :], _grad_log_psi_helper(samples[t-1, :])
         # First half-step.. this places p on the 'half time' schedule
-        p = p + (dt/2) * g
+        p = p0 + (dt/2) * g
         for l in range(n_leapfrog):
             th = th + dt * p / mass
             g = _grad_log_psi_helper(th)
@@ -123,8 +138,8 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
         new_log_psi = _log_psi_helper(th)
 
         # Compute (log) Metropolis ratio, log[p(x')q(x|x')/p(x)q(x'|x)]
-        new_hamiltonian = new_log_psi - torch.sum(p*p)/mass/2
-        old_hamiltonian = log_psi[t-1] - torch.sum(momentum[t, :]*momentum[t, :])/mass/2
+        new_hamiltonian = new_log_psi - torch.sum(p*p/mass)/2
+        old_hamiltonian = log_psi[t-1] - torch.sum(p0*p0/mass)/2
         log_metropolis_ratio = new_hamiltonian - old_hamiltonian
 
         # Accept or reject
@@ -137,12 +152,18 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
             log_psi[t] = log_psi[t-1]
             samples[t, :] = samples[t-1, :]
 
+        # If burn-in just completed, estimate curvature of log_psi and use this to set a better mass
+        if t == burn_in - 1:
+            curvature = _hess_log_psi_helper(samples[t-1, :])
+            mass = torch.clip(-1/curvature.diag(), min=1e-3, max=1e+3)
+
     # Return a dict containing samples plus other useful metadata
     return {
         'samples': samples[burn_in:, ...],
         'accept': accept[burn_in:].mean(),
         'log_psi': log_psi[burn_in:],
         'lam_kl': lam_kl,
+        'mass': mass,
         'burn_samples': samples[:burn_in, ...],
         'burn_accept': accept[:burn_in].mean(),
         'burn_log_psi': log_psi[:burn_in],
