@@ -168,3 +168,87 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
         'burn_accept': accept[:burn_in].mean(),
         'burn_log_psi': log_psi[:burn_in],
     }
+
+
+def stams_importance_sampling(log_p, lam_kl, q_init, n_samples, n_kl_samples=100):
+    """Generate a set of samples of theta~Q and importance-sampling weights, psi/Q
+
+    Strategy is based on a Laplace approximation: we navigate to the MAP value of theta, then halve the curvature there
+    to get a gaussian proposal distribution in theta-space.
+    """
+
+
+    q = q_init.clone()
+    def _log_psi_helper(theta):
+        q.theta.copy_(theta)
+        _kl = -q.entropy() - q.monte_carlo_ev(log_p, n_kl_samples)
+        return 0.5*q.log_det_fisher() - lam_kl*_kl
+
+    def _grad_log_psi_helper(theta):
+        q.theta.copy_(theta)
+        q.theta.requires_grad_(True)
+        _kl = -q.entropy() - q.monte_carlo_ev(log_p, n_kl_samples)
+        _grad_kl = torch.autograd.grad(_kl, q.theta)[0]
+        q.theta.requires_grad_(False)
+        return 0.5*q.grad_log_det_fisher() - lam_kl*_grad_kl
+
+    def _hess_log_psi_helper(theta):
+        q.theta.copy_(theta)
+        q.theta.requires_grad_(True)
+        _kl = -q.entropy() - q.monte_carlo_ev(log_p, n_kl_samples)
+        _tmp_log_psi = 0.5*q.log_det_fisher() - lam_kl*_kl
+        _grad_log_psi = torch.autograd.grad(_tmp_log_psi, q.theta, create_graph=True)[0]
+        curv = torch.zeros(q.n_params, q.n_params)
+        for i in range(q.n_params):
+            curv[i, :] = torch.autograd.grad(_grad_log_psi[i], q.theta, retain_graph=True)[0]
+        q.theta.requires_grad_(False)
+        return curv
+
+
+    # First part: optimize theta towards mode of psi
+    th = q_init.theta
+    th_optim = torch.zeros(401, q_init.n_params)
+    th_optim[0, :] = th
+    # Warm-up with 100 gradient-ascent steps
+    for t in range(100):
+        # Get gradient
+        g, lr = _grad_log_psi_helper(th), .1 / (1 + t // 5)
+        # Take a gradient ascent step
+        th = th + g * lr
+        # Record optimization trajectory
+        th_optim[t+1, :] = th
+
+    # Rapidly find the max using newton's method with an additional bit of learning rate decay to ensure
+    # convergence despite stochastic estimation of KL term
+    for t in range(300):
+        # Get gradient
+        g, h, lr = _grad_log_psi_helper(th), _hess_log_psi_helper(th), 1 / (1 + t // 5)
+        th = th - torch.linalg.solve(h, g) * lr
+        # Record optimization trajectory
+        th_optim[t+101, :] = th
+
+    # Second part: construct a multivariate normal over theta values,
+    # tripling the covariance to ensure it's relatively wide
+    cov = -_hess_log_psi_helper(th).inverse() * 3
+    prop = torch.distributions.MultivariateNormal(loc=th, covariance_matrix=cov)
+
+    # Draw samples
+    theta_samples = prop.sample((n_samples,))
+
+    # Compute log proposal and log psi on each sample
+    log_psi_values = torch.tensor([_log_psi_helper(th) for th in theta_samples])
+    log_prop_values = prop.log_prob(theta_samples)
+
+    # Compute importance weights
+    weights = (log_psi_values - log_prop_values).exp()
+
+    # Return a dict containing samples plus other useful metadata
+    return {
+        'th_optim': th_optim,
+        'proposal_mean': th,
+        'proposal_cov': cov,
+        'samples': theta_samples,
+        'weights': weights,
+        'log_psi': log_psi_values,
+        'log_prop': log_prop_values
+    }
