@@ -1,3 +1,4 @@
+from __future__ import annotations
 import torch
 from math import sqrt, log, pi
 from torch.distributions import MultivariateNormal
@@ -15,6 +16,7 @@ class MVN(object):
         if d is None and loc is None:
             raise ValueError("Must specificy one of loc or dimension d!")
         self.d = d or len(loc)
+        self.theta = None
 
     def to(self, device: torch.device) -> None:
         self.theta = self.theta.to(device)
@@ -31,6 +33,9 @@ class MVN(object):
         raise NotImplementedError("To be implemented by a subclass")
 
     def scale_tril(self) -> torch.Tensor:
+        raise NotImplementedError("To be implemented by a subclass")
+
+    def clip_stdev(self, min_sigma) -> MVN:
         raise NotImplementedError("To be implemented by a subclass")
 
     def covariance(self) -> torch.Tensor:
@@ -162,6 +167,13 @@ class MVNFull(MVN):
         out[self._chol_ij[0], self._chol_ij[1]] = self.theta[self.d:]
         return out
 
+    def clip_stdev(self, min_sigma) -> MVN:
+        min_sigma = min_sigma * torch.ones(())
+        new_mvn = self.clone()
+        diag_entry_mask = torch.cat([torch.zeros(self.d, dtype=torch.bool), self._chol_ij[0] == self._chol_ij[1]])
+        new_mvn.theta[diag_entry_mask] = torch.clip(new_mvn.theta[diag_entry_mask], min_sigma)
+        return new_mvn
+
     def covariance(self) -> torch.Tensor:
         scale_tril = self.scale_tril()
         return scale_tril @ scale_tril.T
@@ -232,6 +244,10 @@ class MVNDiag(MVN):
         """Get the Cholesky(covariance) lower-triangular matrix part of parameters"""
         return torch.diag(torch.exp(self.theta[self.d:]))
 
+    def clip_stdev(self, min_sigma) -> MVN:
+        min_sigma = min_sigma * torch.ones(())
+        return MVNDiag(theta=torch.cat([self.theta[:self.d], torch.clip(self.theta[self.d:], min=min_sigma.log())]))
+
     def covariance(self) -> torch.Tensor:
         return torch.diag(torch.exp(self.theta[self.d:]*2))
 
@@ -258,7 +274,7 @@ class MVNDiag(MVN):
     @staticmethod
     def new_random(d, device=torch.device('cpu')):
         return MVNDiag(loc=torch.randn(d, device=device),
-                         scale=torch.randn(d, device=device).abs())
+                       scale=torch.randn(d, device=device).abs())
 
 
 class MVNIso(MVN):
@@ -288,6 +304,10 @@ class MVNIso(MVN):
     def scale_tril(self) -> torch.Tensor:
         """Get the Cholesky(covariance) lower-triangular matrix part of parameters"""
         return torch.eye(self.d, self.d, device=self.theta.device) * torch.exp(self.theta[-1])
+
+    def clip_stdev(self, min_sigma) -> MVN:
+        min_sigma = min_sigma * torch.ones(())
+        return MVNIso(theta=torch.cat([self.theta[:self.d], torch.clip(self.theta[self.d:], min=min_sigma.log())]))
 
     def covariance(self) -> torch.Tensor:
         return torch.eye(self.d, self.d, device=self.theta.device) * torch.exp(self.theta[-1]*2)
@@ -342,6 +362,9 @@ def _run_cov_test(cls, dim):
     assert torch.allclose(cov, scale_tril @ scale_tril.T)
     assert torch.allclose(cov, prec.inverse())
     assert torch.allclose(torch.logdet(cov), mvn.log_det_cov())
+
+    clip_scale_tril = mvn.clip_stdev(1.0).scale_tril()
+    assert torch.all(clip_scale_tril.diag() >= 1.0*torch.ones(dim))
 
     th_mvn = mvn.to_torch_mvn()
     assert torch.allclose(cov, th_mvn.covariance_matrix)

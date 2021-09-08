@@ -2,13 +2,19 @@ import torch
 
 
 def log_prob_banana(xy):
-    x, y = xy[0], xy[1]
+    if xy.size(0) == 2:
+        x, y = xy[0], xy[1]
+    else:
+        x, y = xy[:, 0], xy[:, 1]
     # Easier to read version: -(y-(x/2)^2)^2 - (x/2)^2
     return -x*x*x*x/8 + y*x*x - 2*y*y - x*x/4
 
 
 def log_prob_cigar(xy, c=.99):
-    x, y = xy[0], xy[1]
+    if xy.size(0) == 2:
+        x, y = xy[0], xy[1]
+    else:
+        x, y = xy[:, 0], xy[:, 1]
     # Compute precision terms for covariance matrix [[1,c],[c,1]], where precision will be [[a,b],[b,a]]
     a = 1./(1. - c*c)
     b = -c/(1. - c*c)
