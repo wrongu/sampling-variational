@@ -18,10 +18,11 @@ def hmc(log_p, init_x, n_samples, n_burnin=100, n_leapfrog=50, dt=.01, mass=1.):
         return lp.detach(), g
 
     x_samples[0, ...] = init_x
-    log_probs[0], grad_log_prob = _log_p_helper(init_x)
+    log_probs[0], _ = _log_p_helper(init_x)
     accept = 0
     for s in range(1, n_samples + n_burnin):
         p0, x = momenta[s, ...], x_samples[s-1, ...]
+        _, grad_log_prob = _log_p_helper(x)
         p = p0 + (dt/2) * grad_log_prob
         for l in range(n_leapfrog):
             x = x + dt * p / mass
