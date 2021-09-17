@@ -94,9 +94,9 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
         q.theta.requires_grad_(False)
         return 0.5*q.grad_log_det_fisher() - lam_kl*_grad_kl
 
-    def _mass_helper(theta, lower_bound=0.01):
+    def _mass_helper(theta, lower_bound=0.001, upper_bound=1000):
         q.theta.copy_(theta)
-        return lower_bound + 1/q.fisher().diag()
+        return torch.clip(1/q.fisher().diag(), lower_bound, upper_bound)
 
 
     samples = torch.zeros(n_samples + burn_in, q_init.n_params)
@@ -243,5 +243,6 @@ def stams_importance_sampling(log_p, lam_kl, q_init, n_samples, n_kl_samples=100
         'samples': theta_samples,
         'weights': weights,
         'log_psi': log_psi_values,
-        'log_prop': log_prop_values
+        'log_prop': log_prop_values,
+        'ess': (weights.sum()*weights.sum()) / (weights*weights).sum()
     }
