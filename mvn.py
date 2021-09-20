@@ -103,14 +103,15 @@ class MVN(object):
         ev += 0.5*torch.sum(cov*H)
         return ev
 
-    def monte_carlo_ev(self, fn, n_samples=1000, include_mcse=False):
+    def monte_carlo_ev(self, fn, n_samples=1000, include_mcse=False, eps=None):
         """Estimate the expected value (ev) of a given function using monte carlo samples from this normal.
 
         If include_mcse is set to True, there is a second return value: the estimated monte carlo standard error
 
         fn() must handle vectorization by accepting input of size (d, n_samples)
         """
-        samples = self.loc()[:, None] + self.scale_tril() @ torch.randn(self.d, n_samples, device=self.theta.device)
+        eps = eps if eps is not None else torch.randn(self.d, n_samples, device=self.theta.device)
+        samples = self.loc()[:, None] + self.scale_tril() @ eps
         values = fn(samples)
         if include_mcse:
             return values.mean(), values.std() / sqrt(n_samples)
