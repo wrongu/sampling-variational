@@ -1,4 +1,6 @@
+from __future__ import annotations
 import torch
+import numpy as np
 from math import sqrt, log, pi
 from torch.distributions import MultivariateNormal
 
@@ -15,6 +17,7 @@ class MVN(object):
         if d is None and loc is None:
             raise ValueError("Must specificy one of loc or dimension d!")
         self.d = d or len(loc)
+        self.theta = None
 
     def to(self, device: torch.device) -> None:
         self.theta = self.theta.to(device)
@@ -31,6 +34,9 @@ class MVN(object):
         raise NotImplementedError("To be implemented by a subclass")
 
     def scale_tril(self) -> torch.Tensor:
+        raise NotImplementedError("To be implemented by a subclass")
+
+    def clip_stdev(self, min_sigma) -> MVN:
         raise NotImplementedError("To be implemented by a subclass")
 
     def covariance(self) -> torch.Tensor:
@@ -98,17 +104,36 @@ class MVN(object):
         ev += 0.5*torch.sum(cov*H)
         return ev
 
-    def monte_carlo_ev(self, fn, n_samples=1000, include_mcse=False):
+    def monte_carlo_ev(self, fn, n_samples=1000, include_mcse=False, eps=None):
         """Estimate the expected value (ev) of a given function using monte carlo samples from this normal.
 
         If include_mcse is set to True, there is a second return value: the estimated monte carlo standard error
+
+        fn() must handle vectorization by accepting input of size (d, n_samples)
         """
-        samples = self.loc() + torch.randn(n_samples, self.d, device=self.theta.device) @ self.scale_tril().T
-        values = torch.tensor([fn(x) for x in samples])
+        eps = eps if eps is not None else torch.randn(self.d, n_samples, device=self.theta.device)
+        samples = self.loc()[:, None] + self.scale_tril() @ eps
+        values = fn(samples)
         if include_mcse:
             return values.mean(), values.std() / sqrt(n_samples)
         else:
             return values.mean()
+
+    def quadrature_ev(self, fn, n=10):
+        assert n**self.d < 1e10, f"Refusing to create {n}^{self.d}={n**self.d} grid points"
+        # Derivation note: hermgauss provides a set of locations and weights for integrating exp(-y**2)fn(y)dy
+        # for scalar y, using sum(fn(locs)*wts). This is generalized in two steps: (1) consider doing this
+        # in multiple dimensions by nesting integrals... the weights will just multiply. Then, (2) apply a
+        # change-of variables from y to x to turn this into an integral over the MVN density. Lots of things
+        # cancel in step (2), so the only real adjustments are scaling locations up by sqrt(2) and scaling
+        # weights down by sqrt(pi).
+        locs_np, wts_np = np.polynomial.hermite.hermgauss(n)
+        locs_1d = torch.tensor(locs_np, device=self.theta.device, dtype=self.theta.dtype) * sqrt(2.)
+        wts_1d = torch.tensor(wts_np, device=self.theta.device, dtype=self.theta.dtype) / sqrt(pi)
+        nd_locs, nd_wts = torch.meshgrid(*([locs_1d]*self.d)), torch.meshgrid(*([wts_1d]*self.d))
+        x_locs = self.loc()[:,None] + self.scale_tril() @ torch.stack([nd_loc.flatten() for nd_loc in nd_locs], dim=0)
+        net_wt = torch.stack([nd_wt.flatten() for nd_wt in nd_wts], dim=0).prod(dim=0)
+        return {'value': torch.sum(fn(x_locs) * net_wt), 'grid': x_locs, 'weights': net_wt}
 
     def ellipse(self, nsigma=1.):
         """Get x, y coordinates defining the ellipse at nsigma standard deviations.
@@ -159,6 +184,13 @@ class MVNFull(MVN):
         out = self.theta.new_zeros(self.d, self.d)
         out[self._chol_ij[0], self._chol_ij[1]] = self.theta[self.d:]
         return out
+
+    def clip_stdev(self, min_sigma) -> MVN:
+        min_sigma = min_sigma * torch.ones(())
+        new_mvn = self.clone()
+        diag_entry_mask = torch.cat([torch.zeros(self.d, dtype=torch.bool), self._chol_ij[0] == self._chol_ij[1]])
+        new_mvn.theta[diag_entry_mask] = torch.clip(new_mvn.theta[diag_entry_mask], min_sigma)
+        return new_mvn
 
     def covariance(self) -> torch.Tensor:
         scale_tril = self.scale_tril()
@@ -230,6 +262,10 @@ class MVNDiag(MVN):
         """Get the Cholesky(covariance) lower-triangular matrix part of parameters"""
         return torch.diag(torch.exp(self.theta[self.d:]))
 
+    def clip_stdev(self, min_sigma) -> MVN:
+        min_sigma = min_sigma * torch.ones(())
+        return MVNDiag(theta=torch.cat([self.theta[:self.d], torch.clip(self.theta[self.d:], min=min_sigma.log())]))
+
     def covariance(self) -> torch.Tensor:
         return torch.diag(torch.exp(self.theta[self.d:]*2))
 
@@ -256,7 +292,7 @@ class MVNDiag(MVN):
     @staticmethod
     def new_random(d, device=torch.device('cpu')):
         return MVNDiag(loc=torch.randn(d, device=device),
-                         scale=torch.randn(d, device=device).abs())
+                       scale=torch.randn(d, device=device).abs())
 
 
 class MVNIso(MVN):
@@ -286,6 +322,10 @@ class MVNIso(MVN):
     def scale_tril(self) -> torch.Tensor:
         """Get the Cholesky(covariance) lower-triangular matrix part of parameters"""
         return torch.eye(self.d, self.d, device=self.theta.device) * torch.exp(self.theta[-1])
+
+    def clip_stdev(self, min_sigma) -> MVN:
+        min_sigma = min_sigma * torch.ones(())
+        return MVNIso(theta=torch.cat([self.theta[:self.d], torch.clip(self.theta[self.d:], min=min_sigma.log())]))
 
     def covariance(self) -> torch.Tensor:
         return torch.eye(self.d, self.d, device=self.theta.device) * torch.exp(self.theta[-1]*2)
@@ -340,6 +380,9 @@ def _run_cov_test(cls, dim):
     assert torch.allclose(cov, scale_tril @ scale_tril.T)
     assert torch.allclose(cov, prec.inverse())
     assert torch.allclose(torch.logdet(cov), mvn.log_det_cov())
+
+    clip_scale_tril = mvn.clip_stdev(1.0).scale_tril()
+    assert torch.all(clip_scale_tril.diag() >= 1.0*torch.ones(dim))
 
     th_mvn = mvn.to_torch_mvn()
     assert torch.allclose(cov, th_mvn.covariance_matrix)
