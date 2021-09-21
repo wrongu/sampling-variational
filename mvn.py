@@ -57,6 +57,10 @@ class MVN(object):
     def grad_log_det_fisher(self) -> torch.Tensor:
         raise NotImplementedError("To be implemented by a subclass")
 
+    def set_theta(self, th):
+        self.theta.copy_(th)
+        return self
+
     def to_torch_mvn(self) -> MultivariateNormal:
         """Get a torch.distributions.MultivariateNormal instance, which can be used for sampling, log prob, etc"""
         scale_tril = self.scale_tril()
