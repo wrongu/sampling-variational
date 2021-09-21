@@ -133,7 +133,7 @@ class MVN(object):
         nd_locs, nd_wts = torch.meshgrid(*([locs_1d]*self.d)), torch.meshgrid(*([wts_1d]*self.d))
         x_locs = self.loc()[:,None] + self.scale_tril() @ torch.stack([nd_loc.flatten() for nd_loc in nd_locs], dim=0)
         net_wt = torch.stack([nd_wt.flatten() for nd_wt in nd_wts], dim=0).prod(dim=0)
-        return {'value': torch.sum(fn(x_locs) * net_wt), 'grid': x_locs, 'weights': net_wt}
+        return torch.sum(fn(x_locs) * net_wt)
 
     def ellipse(self, nsigma=1.):
         """Get x, y coordinates defining the ellipse at nsigma standard deviations.
