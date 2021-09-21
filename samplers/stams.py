@@ -179,7 +179,7 @@ def stams_importance_sampling(log_p, lam_kl, q_init, n_samples, n_kl_quad=10):
     for t in range(100):
         # Get gradient
         _, g = log_psi_stams(log_p, lam_kl, q.set_theta(th), include_grad=True)
-        lr =  .1 / (1 + t // 5)
+        lr =  .1 / (1 + t // 5) / torch.sum(g[:,None] * g[None,:] * q.fisher()).sqrt()
         # Take a gradient ascent step
         th = th + g * lr
         # Record optimization trajectory
