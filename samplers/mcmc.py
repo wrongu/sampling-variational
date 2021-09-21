@@ -45,7 +45,9 @@ def hmc(log_p, init_x, n_samples, n_burnin=100, n_leapfrog=50, dt=.01, mass=1.):
             x_samples[s, :] = x_samples[s-1, :]
 
     return {
-        'samples': x_samples,
-        'log_prob': log_probs,
-        'accept': accept / n_samples
+        'samples': x_samples[n_burnin:, ...],
+        'log_prob': log_probs[n_burnin:],
+        'accept': accept / n_samples,
+        'burn_samples': x_samples[:n_burnin, ...],
+        'burn_log_prob': log_probs[:n_burnin]
     }

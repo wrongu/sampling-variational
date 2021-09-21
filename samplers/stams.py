@@ -72,28 +72,27 @@ def stams_mvn_langevin(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_kl_
     }
 
 
-def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog=50, n_kl_samples=100, dt=.01):
+def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog=50, n_kl_quad=10, dt=.01):
     """Run Hamiltonian Monte Carlo dynamics over q parameters (theta), using bound on MI inspired
     by Stam's inequality.
 
     That is, log_psi = 1/2 log(det(FIM(theta))) - lambda_kl * KL(q(x|theta)||p(x)) + constants, where FIM
     is the Fisher Information Matrix.
 
-    KL(q||p) is evaluated by monte-carlo sampling from q
+    KL(q||p) is evaluated using Gauss-Hermite quadrature with 10 points per dimension
     """
 
 
     q = q_init.clone()
-    kl_eps = torch.randn(q.d, n_kl_samples)
     def _log_psi_helper(theta):
         q.theta.copy_(theta)
-        _kl = -q.entropy() - q.monte_carlo_ev(log_p, eps=kl_eps)
+        _kl = -q.entropy() - q.quadrature_ev(log_p, n=n_kl_quad)
         return 0.5*q.log_det_fisher() - lam_kl*_kl
 
     def _grad_log_psi_helper(theta):
         q.theta.copy_(theta)
         q.theta.requires_grad_(True)
-        _kl = -q.entropy() - q.monte_carlo_ev(log_p, eps=kl_eps)
+        _kl = -q.entropy() - q.quadrature_ev(log_p, n=n_kl_quad)
         _grad_kl = torch.autograd.grad(_kl, q.theta)[0]
         q.theta.requires_grad_(False)
         return 0.5*q.grad_log_det_fisher() - lam_kl*_grad_kl
@@ -136,7 +135,7 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
         # Undo extra half-step of momentum from final loop
         p = p - (dt/2) * g
 
-        # Evaluate the new point (using same frozen kl_eps)
+        # Evaluate the new point
         new_log_psi = _log_psi_helper(th)
 
         # Compute (log) Metropolis ratio, log[p(x')q(x|x')/p(x)q(x'|x)]
@@ -147,10 +146,7 @@ def stams_mvn_hmc(log_p, lam_kl, q_init, n_samples=1000, burn_in=100, n_leapfrog
         # Accept or reject
         if log_metropolis_ratio > u[t]:
             accept[t] = 1.
-            # Upon accept, resample kl_eps and recompute log_psi so that the next iteration's 
-            # metropolis_ratio is comparing the same kl_eps values
-            kl_eps.copy_(torch.randn(q.d, n_kl_samples))
-            log_psi[t] = _log_psi_helper(th)
+            log_psi[t] = new_log_psi
             samples[t, :] = th
         else:
             accept[t] = 0.
