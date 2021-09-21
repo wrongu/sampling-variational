@@ -17,6 +17,13 @@ def acf(samples, max_lag=None):
 def ess(samples, max_lag=None):
     """Compute effective sample size (ESS) for each column of given set of samples
     """
-    # TODO - add a more standard option dynamically choosing max_lag instead of clipping the ACF
-    autocorrelation = torch.clip(acf(samples, max_lag), 0., 1.)
-    return samples.size(0) / (1 + 2 * autocorrelation[1:, ...].sum(dim=0))
+    autocorrelation = acf(samples, max_lag)
+    # Sums of adjacent elements should never be negative unless due to sample noise. Truncate
+    # ACF as soon as we find a negative pair. Appending a row of -1 to pair_sum to ensure at
+    # least one negative value is found.
+    # See Geyer (1992) or tensorflow.org/probability/api_docs/python/tfp/mcmc/effective_sample_size
+    pair_sum = torch.cat([autocorrelation[:-1, ...] + autocorrelation[1:, ...],
+                          -torch.ones(1, samples.size(1))], dim=0)
+    first_neg_idx = [torch.where(pair_sum[:, i] < 0)[0][0] for i in range(samples.size(1))]
+    sum_rho = torch.tensor([autocorrelation[1:idx, i].sum() for i, idx in enumerate(first_neg_idx)])
+    return samples.size(0) / (1 + 2 * sum_rho)
