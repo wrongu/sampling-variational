@@ -3,9 +3,16 @@ import torch
 import numpy as np
 from math import sqrt, log, pi
 from torch.distributions import MultivariateNormal
+import functools
 
 
 LOG2PI = log(2*pi)
+
+
+@functools.lru_cache
+def hermgauss(n):
+    return np.polynomial.hermite.hermgauss(n)
+
 
 
 class MVN(object):
@@ -131,7 +138,7 @@ class MVN(object):
         # change-of variables from y to x to turn this into an integral over the MVN density. Lots of things
         # cancel in step (2), so the only real adjustments are scaling locations up by sqrt(2) and scaling
         # weights down by sqrt(pi).
-        locs_np, wts_np = np.polynomial.hermite.hermgauss(n)
+        locs_np, wts_np = hermgauss(n)
         locs_1d = torch.tensor(locs_np, device=self.theta.device, dtype=self.theta.dtype) * sqrt(2.)
         wts_1d = torch.tensor(wts_np, device=self.theta.device, dtype=self.theta.dtype) / sqrt(pi)
         nd_locs, nd_wts = torch.meshgrid(*([locs_1d]*self.d)), torch.meshgrid(*([wts_1d]*self.d))
