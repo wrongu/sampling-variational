@@ -1,6 +1,8 @@
 import torch
 import numpy as np
+from util import is_positive_definite
 from samplers.base import Sampler
+from tqdm import tqdm
 
 
 class DualAveragingStepSize(object):
@@ -65,26 +67,22 @@ class HMC(Sampler):
         # Return proposed x along with the log metropolis ratio and new log prob
         return x, ham_new - ham_old, lp
 
-    def tune(self, init_x, n_leapfrog_tries=200, target_accept=0.8, tune_mass=True):
-        # Start with a Laplace approximation
-        map_x = self.map(init_x.flatten())
-        _, _, hessian = self._log_p_helper(map_x, grads=2)
-        u, s, _ = torch.svd(-hessian)
-        # r is lower factor of covariance, i.e. cov = r.T@r
-        r = u @ torch.diag(1/s.sqrt())
+    def tune(self, init_xs, target_accept=0.8, tune_mass=True, min_mass=1e-3):
+        n_tune, dim_x = init_xs.size()
 
-        # Draw starting points for leapfrog trajectories from the Laplace Gaussian
-        leapfrog_start_x = map_x.view(1, -1) + torch.randn(n_leapfrog_tries, init_x.numel()) @ r.T
+        # Take each init_xs and nudge it up the gradient of log prob a few steps
+        init_xs = [self.map(start_x, steps=5) for start_x in init_xs]
 
-        # Set mass based on average curvature across sampled points
-        avg_hess = sum(self._log_p_helper(start_x, grads=2)[2] for start_x in leapfrog_start_x) / n_leapfrog_tries
-        mass = -avg_hess.diag()
+        # Set mass based on average curvature across local maxima after iterating
+        # a few steps from the sampled points. Pass result through softplus to ensure
+        # no negative mass (convex dimensions are given small but nonnegative mass)
+        avg_hess = sum(self._log_p_helper(start_x, grads=2)[2] for start_x in init_xs) / n_tune
+        mass = min_mass + torch.nn.functional.softplus(-avg_hess.diag())
 
         # Use dual-averaging method with a desired target acceptance rate to select dt
         dt, dual_avg = self.dt, DualAveragingStepSize(self.dt, target_accept=target_accept)
-        for start_x in leapfrog_start_x:
+        for start_x in init_xs:
             _, log_mh_ratio, _ = self.leapfrog_propose(start_x, mass, dt)
-            # print("DEBUG TUNING", "dt", dt, "p(accept)", log_mh_ratio.exp().item(), "exp(log_avg_dt)", np.exp(dual_avg.log_averaged_step))
             dt = dual_avg.update(log_mh_ratio.exp().clip(max=1.).item(), average=False)
         dt = dual_avg.update(log_mh_ratio.exp().clip(max=1.).item(), average=True)
 
@@ -95,7 +93,7 @@ class HMC(Sampler):
 
         return mass, dt
 
-    def sample(self, init_x, n_samples=1000, n_burnin=100):
+    def sample(self, init_x, n_samples=1000, n_burnin=100, progbar=False):
         if not self.tuned:
             raise RuntimeWarning("Running HMC.sample() without calling HMC.tune() first!")
 
@@ -109,7 +107,11 @@ class HMC(Sampler):
 
         u = torch.rand(n_samples + n_burnin).log()
 
-        for t in range(1, n_samples + n_burnin):
+        trange = range(1, n_samples + n_burnin)
+        if progbar:
+            trange = tqdm(trange, total=n_samples+n_burnin, leave=False, desc='HMC.sample [00.0]')
+
+        for t in trange:
             prop_x, log_mh_ratio, prop_log_prob = self.leapfrog_propose(samples[t-1, :], self.mass, self.dt)
 
             if log_mh_ratio > u[t]:
@@ -121,9 +123,16 @@ class HMC(Sampler):
                 samples[t, :] = samples[t-1, :]
                 log_prob[t] = log_prob[t-1]
 
+            if progbar:
+                acc = accept[:t].mean().item() if t < n_burnin else accept[n_burnin:t].mean().item()
+                trange.set_description(f'HMC.sample [{100*acc:.1f}]')
+
         return {'samples': samples[n_burnin:, :],
-                'log_prob': log_prob[n_burnin:],
+                'log_p': log_prob[n_burnin:],
                 'accept': accept[n_burnin:].mean(),
                 'burn_samples': samples[:n_burnin, :],
-                'burn_log_prob': log_prob[:n_burnin],
-                'burn_accept': accept[:n_burnin].mean()}
+                'burn_log_p': log_prob[:n_burnin],
+                'burn_accept': accept[:n_burnin].mean(),
+                'mass': self.mass,
+                'dt': self.dt,
+                'leapfrog_t': self.leapfrog_t}

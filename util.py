@@ -27,3 +27,11 @@ def ess(samples, max_lag=None):
     first_neg_idx = [torch.where(pair_sum[:, i] < 0)[0][0] for i in range(samples.size(1))]
     sum_rho = torch.tensor([autocorrelation[1:idx, i].sum() for i, idx in enumerate(first_neg_idx)])
     return samples.size(0) / (1 + 2 * sum_rho)
+
+
+def is_positive_definite(m):
+    try:
+        _ = torch.linalg.cholesky(m)
+        return True
+    except RuntimeError:
+        return False
