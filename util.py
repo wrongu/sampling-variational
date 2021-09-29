@@ -1,4 +1,5 @@
 import torch
+from math import log
 
 
 def acf(samples, max_lag=None):
@@ -35,3 +36,17 @@ def is_positive_definite(m):
         return True
     except RuntimeError:
         return False
+
+
+def estimate_log_z(prop_mean, prop_cov, unnorm_log_p, n_importance_sample=1000):
+    """Given mu and cov for proposal and a function handle to compute the unnormalized log_p(x), estimate the
+    normalization (aka partition function) log(z) such that log_p(x) = unnorm_log_p(x) - log(z)
+    """
+    # Importance sampling using moment-matched gaussian
+    proposal = torch.distributions.MultivariateNormal(loc=prop_mean, covariance_matrix=prop_cov)
+    new_samples = proposal.sample((n_importance_sample,))
+
+    # Estimate of Z is `1/n \sum p*(x)/Q(x)` where Q is the proposal. So, log(z) is logsumexp(log(p(x))-log(Q(x))) - log(n)
+    log_integrand = unnorm_log_p(new_samples).flatten() - proposal.log_prob(new_samples).flatten()
+
+    return torch.logsumexp(log_integrand, dim=0) - log(n_importance_sample)
