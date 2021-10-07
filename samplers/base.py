@@ -24,9 +24,9 @@ class Sampler(object):
         elif grads == 0:
             return lp.detach()
 
-    def map(self, init_x, steps=500):
+    def map(self, init_x, steps=500, grad_lr=0.01, newt_lr=1.0):
         x = init_x.detach()
-        newton, lr = False, 0.01
+        newton, lr = False, grad_lr
 
         # Warm-up with gradient ascent steps until the hessian is well-behaved, then switch to
         # Newton's method updates
@@ -35,10 +35,10 @@ class Sampler(object):
 
             # Upon finding a convex region, switch to newton and reset LR
             if not newton and is_positive_definite(-h):
-                newton, lr = True, 1.0
+                newton, lr = True, newt_lr
             elif newton and not is_positive_definite(-h):
                 warn("Encountered non-convex region after switching to newton!")
-                newton, lr = False, 0.01
+                newton, lr = False, grad_lr
 
             with torch.no_grad():
                 # Get dx direction for either newton or gradient update

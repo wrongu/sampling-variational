@@ -68,21 +68,28 @@ class HMC(Sampler):
         return x, ham_new - ham_old, lp
 
     def tune(self, init_xs, target_accept=0.8, tune_mass=True, min_mass=1e-3):
-        n_tune, dim_x = init_xs.size()
+        _, dim_x = init_xs.size()
 
         # Take each init_xs and nudge it up the gradient of log prob a few steps
-        init_xs = [self.map(start_x, steps=5) for start_x in init_xs]
+        init_xs = torch.stack([self.map(start_x, steps=5) for start_x in init_xs], dim=0)
+        init_xs = init_xs[~torch.any(torch.isnan(init_xs), dim=1), :]
 
         # Set mass based on average curvature across local maxima after iterating
         # a few steps from the sampled points. Pass result through softplus to ensure
-        # no negative mass (convex dimensions are given small but nonnegative mass)
-        avg_hess = sum(self._log_p_helper(start_x, grads=2)[2] for start_x in init_xs) / n_tune
+        # no negative mass (convex dimensions are given small but nonnegative mass).
+        # Include a single 'eye' matrix in the average to regularize, and exclude any nan
+        # hessians
+        hessians = torch.stack([torch.eye(dim_x)] + [self._log_p_helper(start_x, grads=2)[2] for start_x in init_xs], dim=0)
+        avg_hess = hessians.nansum(dim=0) / torch.sum(~torch.isnan(hessians), dim=0);
         mass = min_mass + torch.nn.functional.softplus(-avg_hess.diag())
 
+        # print("AVG HESS", avg_hess, "MASS", mass)
+
         # Use dual-averaging method with a desired target acceptance rate to select dt
-        dt, dual_avg = self.dt, DualAveragingStepSize(self.dt, target_accept=target_accept)
+        dt, dual_avg = self.dt, DualAveragingStepSize(self.dt, gamma=0.5, target_accept=target_accept)
         for start_x in init_xs:
             _, log_mh_ratio, _ = self.leapfrog_propose(start_x, mass, dt)
+            # print(start_x.numpy(), dt, log_mh_ratio.item(), log_mh_ratio.exp().clip(max=1.).item())
             dt = dual_avg.update(log_mh_ratio.exp().clip(max=1.).item(), average=False)
         dt = dual_avg.update(log_mh_ratio.exp().clip(max=1.).item(), average=True)
 
