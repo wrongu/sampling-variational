@@ -77,7 +77,6 @@ class HMC(Sampler):
         for i in range(n_init):
             tmp = init_xs[i, :].clone()
             init_xs[i, :], last_lr = self.map(tmp, steps=map_steps, **map_kwargs)
-            print(i, *last_lr, tmp.numpy(), init_xs[i, :].numpy())
             map_kwargs['grad_lr'] = min(0.01, 10*last_lr[0])
             map_kwargs['newt_lr'] = min(1.0, 10*last_lr[1])
         init_xs = init_xs[~torch.any(torch.isnan(init_xs), dim=1), :]
