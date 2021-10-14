@@ -107,7 +107,7 @@ class HMC(Sampler):
 
         return mass, dt
 
-    def sample(self, init_x, warmup_steps=100, n_samples=1000, n_burnin=100, progbar=False):
+    def sample(self, init_x, n_samples=1000, n_burnin=100, warmup_steps=100, progbar=False):
         if not self.tuned:
             raise RuntimeWarning("Running HMC.sample() without calling HMC.tune() first!")
 
