@@ -76,6 +76,6 @@ if __name__ == '__main__':
         prev_result = torch.load(save_file)
         if prev_result['samples'].size(0) < args.samples:
             save_file = args.save_dir / f"hmc_{args.distrib}_{args.component}_{args.lam:.3f}_{args.chain:03d}_ext{args.samples}.dat"
-            result = extend_sampler(prev_result, p['log_p'], args.lam, q, args.samples, args.warmup, p['quad_n'])
+            result = extend_sampler(prev_result, p['log_p'], args.lam, q, args.samples, p['quad_n'])
             torch.save(result, save_file)
 
