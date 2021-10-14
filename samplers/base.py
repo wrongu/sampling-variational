@@ -24,7 +24,7 @@ class Sampler(object):
         elif grads == 0:
             return lp.detach()
 
-    def map(self, init_x, steps=500, grad_lr=0.01, newt_lr=1.0):
+    def map(self, init_x, steps=500, grad_lr=0.01, newt_lr=1.0, return_lr=False):
         x = init_x.detach()
         newton, lr = False, grad_lr
 
@@ -48,7 +48,10 @@ class Sampler(object):
                 while self._log_p_helper(x + lr * dx) < logp:
                     lr = lr / 2
                 x = x + lr * dx
-        return x
+        if return_lr:
+            return x, (lr, newt_lr)
+        else:
+            return x
 
     def sample(self, init_x, n_samples=1000, n_burnin=100):
         raise NotImplementedError("Sampler.sample() implemented by subclasses")

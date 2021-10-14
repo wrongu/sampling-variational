@@ -67,11 +67,18 @@ class HMC(Sampler):
         # Return proposed x along with the log metropolis ratio and new log prob
         return x, ham_new - ham_old, lp
 
-    def tune(self, init_xs, target_accept=0.8, tune_mass=True, min_mass=1e-3):
-        _, dim_x = init_xs.size()
+    def tune(self, init_xs, map_steps=50, target_accept=0.8, tune_mass=True, min_mass=1e-3, verbose=False):
+        n_init, dim_x = init_xs.size()
 
-        # Take each init_xs and nudge it up the gradient of log prob a few steps
-        init_xs = torch.stack([self.map(start_x, steps=5) for start_x in init_xs], dim=0)
+        # Take each init_xs and nudge it up the gradient of log prob a few steps. Inside self.map,
+        # the step size (lr) is updated if we overshoot a lot. The final value of the lr is returned
+        # and re-used (after inflating by 10x) for the next iteration
+        map_kwargs = {'return_lr': True}
+        for i in range(n_init):
+            tmp = init_xs[i, :].clone()
+            init_xs[i, :], last_lr = self.map(tmp, steps=map_steps, **map_kwargs)
+            map_kwargs['grad_lr'] = min(0.01, 10*last_lr[0])
+            map_kwargs['newt_lr'] = min(1.0, 10*last_lr[1])
         init_xs = init_xs[~torch.any(torch.isnan(init_xs), dim=1), :]
 
         # Set mass based on average curvature across local maxima after iterating
@@ -100,11 +107,15 @@ class HMC(Sampler):
 
         return mass, dt
 
-    def sample(self, init_x, n_samples=1000, n_burnin=100, progbar=False):
+    def sample(self, init_x, n_samples=1000, n_burnin=100, warmup_steps=100, progbar=False):
         if not self.tuned:
             raise RuntimeWarning("Running HMC.sample() without calling HMC.tune() first!")
 
         accept = torch.ones(n_samples + n_burnin)
+
+        # 'Warmup' by taking a moderate number of steps towards the MAP point of the distribution.
+        # This makes it less likely that initial points are poorly behaved and immediately rejected
+        init_x = self.map(init_x.clone(), warmup_steps)
         
         samples = torch.zeros(n_samples + n_burnin, init_x.numel())
         samples[0, :] = init_x.flatten()
