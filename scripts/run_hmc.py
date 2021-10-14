@@ -18,7 +18,7 @@ def run_sampler(log_p, lam, q, n_samples, n_warmup, n_kl_quad):
     return hmc.sample(torch.randn(200, q.n_params),
                       n_samples=n_samples,
                       n_burnin=n_samples//10,
-                      n_warmup=n_warmup,
+                      warmup_steps=n_warmup,
                       progbar=True)
 
 def extend_sampler(old_results, log_p, lam, q, n_total_samples, n_kl_quad):
@@ -30,7 +30,7 @@ def extend_sampler(old_results, log_p, lam, q, n_total_samples, n_kl_quad):
     new_results = hmc.sample(old_results['samples'][-1,:],
                              n_samples=n_new_samples,
                              n_burnin=0,
-                             n_warmup=0,
+                             warmup_steps=0,
                              progbar=True)
     old_results.update({
         'samples': torch.cat([old_results['samples'], new_results['samples']], dim=0),
