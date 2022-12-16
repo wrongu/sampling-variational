@@ -1,13 +1,18 @@
 import torch
+from math import sqrt, log, pi
 
 
-def log_prob_banana(xy):
+def log_prob_banana(xy: torch.Tensor):
     if xy.size(0) == 2:
         x, y = xy[0], xy[1]
     else:
         x, y = xy[:, 0], xy[:, 1]
+    # Calculate normalizer
+    var_x, var_y, d = 2, 1/2, 2
+    log_z = 1/2*(d*log(2*pi) + log(var_x) + log(var_y))
     # Easier to read version: -(y-(x/2)^2)^2 - (x/2)^2
-    return -x*x*x*x/8 + y*x*x - 2*y*y - x*x/4
+    # Gaussian-like version: -1/2*((y-mu_y)^2/var_y + (x^2)/var_x), with mu_y=x^2/4
+    return -x*x*x*x/8 + y*x*x - 2*y*y - x*x/4 - log_z
 
 
 def log_prob_cigar(xy, c=.99):
@@ -56,4 +61,5 @@ if __name__ == '__main__':
     plt.subplot(2, 2, 3)
     plot_helper_1d(log_prob_mix_laplace)
     plt.title('mix laplace')
+    plt.savefig(args.problem + '.png')
     plt.show()
